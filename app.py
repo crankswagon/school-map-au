@@ -3,6 +3,8 @@ import streamlit as st
 import pydeck as pdk
 from sklearn import preprocessing
 import geopandas as gpd
+import math
+
 
 ## load in data
 df_school_profile = pd.read_excel('./data/School Profile 2024.xlsx', sheet_name='SchoolProfile 2024')
@@ -21,51 +23,21 @@ gdf = gpd.read_file("./data/catchments_primary.shp")
 df_vis["Student Teacher Ratio"] = df_vis["Total Enrolments"]/df_vis["Full Time Equivalent Teaching Staff"]
 
 
-
-
 ## NSW Shapefile https://data.nsw.gov.au/data/dataset/nsw-education-school-intake-zones-catchment-areas-for-nsw-government-schools
 
 
 
 ## normalisation for vis
-min_max_scaler = preprocessing.MaxAbsScaler()
-df_vis["Student Teacher Ratio Colour"] = min_max_scaler.fit_transform(df_vis[["Student Teacher Ratio"]])
-df_vis["clr"] = min_max_scaler.fit_transform(df_vis[["ICSEA"]])*255
+color_scaler = preprocessing.MaxAbsScaler()
+
 # x_scaled = min_max_scaler.fit_transform(df_vis)
 # df = pd.DataFrame(x_scaled)
 
 # st.dataframe(df_school_loc)
 # st.dataframe(df_school_profile)
 
-st.vega_lite_chart(
-   df_vis,
-   {
-       "mark": "bar", #{"type": "circle", "tooltip": True},
-        "encoding": {
-            "x": {
-            "bin": "true",
-            "field": "clr"
-            },
-            "y": {"aggregate": "count"}
-        }
-   },
-)
 
-st.vega_lite_chart(
-   df_vis,
-   {
-       "mark": "bar", #{"type": "circle", "tooltip": True},
-        "encoding": {
-            "x": {
-            "bin": "true",
-            "field": "ICSEA"
-            },
-            "y": {"aggregate": "count"}
-        }
-   },
-)
 
-st.dataframe(df_vis)
 
 
 # st.dataframe(gdf)
@@ -81,14 +53,7 @@ INITIAL_VIEW_STATE = pdk.ViewState(
 
 
 
-schools = pdk.Layer(
-    'ScatterplotLayer',     # Change the `type` positional argument here
-    df_vis,
-    get_position=['Longitude', 'Latitude'],
-    auto_highlight=True,
-    get_radius=100,          # Radius is given in meters
-    get_fill_color=['140', 'clr > 220 ? 255-2*(255-clr) : 0', 'clr > 220 ? 140 : clr+35', '255'],
-    pickable=True)
+
 
 tooltip = {
    "html": "<b>School Name:</b> {School Name} <br/> \
@@ -116,13 +81,138 @@ tooltip = {
 #     get_fill_color = [255, 100, 100, 100]
 
 # )
-r = pdk.Deck(
+
+# ['140', f'clr > {colourBalance} ? 255-(255-clr)*5 : 0', f'clr > {colourBalance} ? 100 : 255-({colourBalance}-clr)', '255'],
+# recode the above in a more testable way
+def G_transformer(x, colourBalance):
+    x_norm = (x/100)*255
+    if x_norm > colourBalance:
+        return round(255-(255-x_norm)*2)
+    else:
+        return 100
+
+#255-2*({colourBalance}-clr)
+def B_transformer(x, colourBalance):
+    x_norm = (x/100)*255
+    if x_norm > colourBalance:
+        return round(255-(255-x_norm)*2)
+    else:
+        return 100
+
+def app():
+    st.set_page_config(layout="wide")
+    
+    ## Selectors
+    
+    with st.sidebar:   
+        states = st.multiselect("States", df_vis["State"].unique(), default=df_vis["State"].unique())
+        schoolType = st.multiselect("School Type", df_vis["School Type"].unique(), default=df_vis["School Type"].unique())
+        schoolSector = st.multiselect("School Sector", df_vis["School Sector"].unique(), default=df_vis["School Sector"].unique())
+        # st.write("State limited to:", states)
+        
+        colourBy = st.selectbox("Render Map Using:", ["ICSEA", "Student Teacher Ratio"])
+        colourBalance = 155 + st.select_slider("Stratification Sensitivity:", range(25,90), value = 65 ) #220 
+        st.write("Increase stratification sensitivity to visually identify top performers")
+        
+    
+    filtered_df_vis = df_vis[df_vis['State'].isin(states) & \
+                             df_vis['School Type'].isin(schoolType) &\
+                             df_vis['School Sector'].isin(schoolSector)
+                                 ]
+    
+    
+    filtered_df_vis["clr"] = color_scaler.fit_transform(filtered_df_vis[[colourBy]])*255
+    filtered_df_vis["radius"] = filtered_df_vis["Total Enrolments"].apply(lambda x: math.sqrt(x))
+
+    # st.vega_lite_chart(
+    #             filtered_df_vis,
+    #             {
+    #                 "mark": "bar", #{"type": "circle", "tooltip": True},
+    #                     "encoding": {
+    #                         "x": {
+    #                         "bin": "true",
+    #                         "field": "clr"
+    #                         },
+    #                         "y": {"aggregate": "count"}
+    #                     }
+    #             },
+    #             )
+    
+
+    sample_df = pd.DataFrame(range(1,100))
+    sample_df.columns=["X"]
+    sample_df["G_Channel"] = sample_df["X"].apply(lambda x: G_transformer(x, colourBalance))
+    sample_df["B_Channel"] = sample_df["X"].apply(lambda x: B_transformer(x, colourBalance))
+    sample_df["R_Channel"] = 140
+    sample_df["A_Channel"] = 255
+    sample_df["RGBA"] =  list(zip(sample_df.R_Channel, sample_df.G_Channel, sample_df.B_Channel, sample_df.A_Channel))
+
+
+    # st.dataframe(sample_df)
+    
+    schools = pdk.Layer(
+                    'ScatterplotLayer',     # Change the `type` positional argument here
+                    filtered_df_vis,
+                    get_position=['Longitude', 'Latitude'],
+                    auto_highlight=True,
+                    stroked=True,
+                    radius_scale=3,
+                    # radius_min_pixels=1,
+                    # radius_max_pixels=100,
+                    get_radius='radius',          # Radius is given in meters
+                    get_fill_color=['140', f'clr > {colourBalance} ? 255-2*(255-clr) : 100', f'clr > {colourBalance} ? 100 : 255-2*(255-clr)', '255'],
+                    pickable=True)
+                    
+    r = pdk.Deck(
         initial_view_state=INITIAL_VIEW_STATE,
         layers=[schools],
         map_style="dark",
         tooltip=tooltip
-)
+    )
+        
+    # st.scatter_chart(
+    # data = sample_df,
+    # x="X",
+    # y="X",
+    # color="RGBA",
+    # )
+    
+    # st.scatter_chart(
+    # data = sample_df,
+    # x="X",
+    # y="G_Channel",
+    # # color="RGBA",
+    # )
+    
+    # st.scatter_chart(
+    # data = sample_df,
+    # x="X",
+    # y="B_Channel",
+    # # color="RGBA",
+    # )
+    
+      
+    st.pydeck_chart(r)
+    
+    st.dataframe(filtered_df_vis)
+    
+        
+    st.vega_lite_chart(
+    filtered_df_vis,
+    {
+        "mark": "bar", #{"type": "circle", "tooltip": True},
+            "encoding": {
+                "x": {
+                "bin": "true",
+                "field": colourBy
+                },
+                "y": {"aggregate": "count"}
+            }
+    },
+    )
+    
+    
+    
 
-st.pydeck_chart(r)
-
+app()
 	
